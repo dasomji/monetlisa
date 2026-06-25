@@ -48,11 +48,40 @@ type config struct {
 	quality           string
 	format            string
 	background        string
+	action            string
+	imageDetail       string
+	imagePaths        stringList
+	inputImages       []inputImage
 	reasoningEffort   string
 	maxOutputTokens   int
 	timeout           time.Duration
 	fast              bool
 	input             string
+}
+
+type inputImage struct {
+	Source   string
+	ImageURL string
+	Detail   string
+}
+
+type stringList []string
+
+func (values *stringList) String() string {
+	if values == nil {
+		return ""
+	}
+	return strings.Join(*values, ",")
+}
+
+func (values *stringList) Set(value string) error {
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			*values = append(*values, item)
+		}
+	}
+	return nil
 }
 
 type userSettings struct {
@@ -158,6 +187,10 @@ func parseRunFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.quality, "quality", cfg.quality, "image quality: auto, low, medium, high")
 	fs.StringVar(&cfg.format, "format", cfg.format, "image format: webp, png, jpeg")
 	fs.StringVar(&cfg.background, "background", cfg.background, "background: auto or opaque")
+	fs.StringVar(&cfg.action, "action", cfg.action, "image generation action: auto, generate, or edit")
+	fs.StringVar(&cfg.imageDetail, "image-detail", cfg.imageDetail, "input image detail: auto, low, high, or original")
+	fs.Var(&cfg.imagePaths, "image", "input image path, URL, or data URL (repeatable, comma-separated)")
+	fs.Var(&cfg.imagePaths, "i", "input image path, URL, or data URL (shorthand)")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning", cfg.reasoningEffort, "reasoning effort for Codex")
 	fs.IntVar(&cfg.maxOutputTokens, "max-output-tokens", 0, "optional max output tokens")
 	fs.DurationVar(&cfg.timeout, "timeout", cfg.timeout, "request timeout")
@@ -225,6 +258,10 @@ func parseRunFlags(args []string) (config, error) {
 	if err := validateImageSettings(cfg); err != nil {
 		return cfg, err
 	}
+	cfg.inputImages, err = loadInputImages(cfg.imagePaths, cfg.imageDetail)
+	if err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
@@ -241,6 +278,8 @@ func initialConfig(args []string) (config, error) {
 		quality:       "auto",
 		format:        "webp",
 		background:    "auto",
+		action:        "auto",
+		imageDetail:   "high",
 		timeout:       10 * time.Minute,
 		fast:          true,
 	}
@@ -276,6 +315,15 @@ func validateImageSettings(cfg config) error {
 	if !oneOf(cfg.background, "auto", "opaque") {
 		return fmt.Errorf("background must be auto or opaque")
 	}
+	if !oneOf(cfg.action, "auto", "generate", "edit") {
+		return fmt.Errorf("action must be auto, generate, or edit")
+	}
+	if strings.EqualFold(cfg.action, "edit") && len(cfg.imagePaths) == 0 {
+		return fmt.Errorf("action edit requires at least one --image")
+	}
+	if !oneOf(cfg.imageDetail, "auto", "low", "high", "original") {
+		return fmt.Errorf("image-detail must be auto, low, high, or original")
+	}
 	return nil
 }
 
@@ -286,6 +334,66 @@ func oneOf(value string, allowed ...string) bool {
 		}
 	}
 	return false
+}
+
+func loadInputImages(paths []string, detail string) ([]inputImage, error) {
+	images := make([]inputImage, 0, len(paths))
+	for _, path := range paths {
+		imageURL, err := inputImageURL(path)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, inputImage{
+			Source:   path,
+			ImageURL: imageURL,
+			Detail:   strings.ToLower(detail),
+		})
+	}
+	return images, nil
+}
+
+func inputImageURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("image path cannot be empty")
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:image/") {
+		return value, nil
+	}
+
+	data, err := os.ReadFile(value)
+	if err != nil {
+		return "", fmt.Errorf("read image %s: %w", value, err)
+	}
+	mimeType := imageMimeType(value, data)
+	if !isSupportedInputImageMIME(mimeType) {
+		return "", fmt.Errorf("unsupported image type %q for %s; use png, jpeg, webp, or non-animated gif", mimeType, value)
+	}
+	return dataURLFromBytes(mimeType, data), nil
+}
+
+func imageMimeType(path string, data []byte) string {
+	if extType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); extType != "" {
+		if mediaType, _, err := mime.ParseMediaType(extType); err == nil {
+			return mediaType
+		}
+		return extType
+	}
+	return http.DetectContentType(data)
+}
+
+func isSupportedInputImageMIME(mimeType string) bool {
+	switch strings.ToLower(mimeType) {
+	case "image/png", "image/jpeg", "image/webp", "image/gif":
+		return true
+	default:
+		return false
+	}
+}
+
+func dataURLFromBytes(mimeType string, data []byte) string {
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 func statusConfig(args []string) (config, []skillPrompt, error) {
@@ -656,6 +764,8 @@ func printStatus(out io.Writer, cfg config, skills []skillPrompt) {
 	fmt.Fprintf(out, "quality: %s\n", cfg.quality)
 	fmt.Fprintf(out, "format: %s\n", cfg.format)
 	fmt.Fprintf(out, "background: %s\n", cfg.background)
+	fmt.Fprintf(out, "action: %s\n", cfg.action)
+	fmt.Fprintf(out, "image_detail: %s\n", cfg.imageDetail)
 	fmt.Fprintf(out, "max_output_tokens: %s\n", displayInt(cfg.maxOutputTokens, "unlimited"))
 	fmt.Fprintf(out, "skills_dir: %s\n", cfg.skillsDir)
 	fmt.Fprintf(out, "skill_count: %d\n", len(skills))
@@ -738,15 +848,25 @@ func callCodex(ctx context.Context, cfg config, out io.Writer) error {
 }
 
 func codexRequestBody(cfg config) map[string]any {
+	content := []map[string]any{{"type": "input_text", "text": cfg.input}}
+	for _, image := range cfg.inputImages {
+		item := map[string]any{
+			"type":      "input_image",
+			"image_url": image.ImageURL,
+		}
+		if image.Detail != "" {
+			item["detail"] = image.Detail
+		}
+		content = append(content, item)
+	}
+
 	body := map[string]any{
 		"model":        cfg.model,
 		"instructions": cfg.prompt,
 		"input": []map[string]any{
 			{
-				"role": "user",
-				"content": []map[string]string{
-					{"type": "input_text", "text": cfg.input},
-				},
+				"role":    "user",
+				"content": content,
 			},
 		},
 		"tools":  []map[string]any{imageGenerationTool(cfg)},
@@ -762,6 +882,9 @@ func codexRequestBody(cfg config) map[string]any {
 
 func imageGenerationTool(cfg config) map[string]any {
 	tool := map[string]any{"type": "image_generation"}
+	if cfg.action != "" {
+		tool["action"] = cfg.action
+	}
 	if cfg.size != "" {
 		tool["size"] = cfg.size
 	}
@@ -1397,13 +1520,14 @@ func randomID() string {
 func printUsage() {
 	cfg, _, err := statusConfig(nil)
 	if err != nil {
-		cfg = config{model: "gpt-5.5", prompt: defaultPrompt, size: "auto", quality: "auto", format: "webp", background: "auto", timeout: 10 * time.Minute, fast: true}
+		cfg = config{model: "gpt-5.5", prompt: defaultPrompt, size: "auto", quality: "auto", format: "webp", background: "auto", action: "auto", imageDetail: "high", timeout: 10 * time.Minute, fast: true}
 	}
 	fmt.Fprintf(os.Stderr, `monetlisa - terminal image generation with OpenAI subscription auth
 
 Usage:
   monetlisa [flags] "image prompt"
   monetlisa -o cover.png "editorial cover art of a robot gardener"
+  monetlisa --image screenshot.png --action edit -o mockup.webp "Modernize this UI"
   cat prompt.txt | monetlisa --output images/generated.png
   monetlisa status
   monetlisa config set default-output-path images/latest.png
@@ -1421,6 +1545,8 @@ Current defaults:
   quality: %s
   format: %s
   background: %s
+  action: %s
+  image_detail: %s
   fast: %t
 
 Flags:
@@ -1431,11 +1557,14 @@ Flags:
   -quality %s
   -format %s
   -background %s
+  -action %s
+  -image-detail %s
+  -i FILE, -image FILE
   -prompt TEXT
   -skills-dir DIR
   -fast=%t
   -timeout %s
   -codex-home DIR
   -monetlisa-home DIR
-`, cfg.model, displayValue(effectiveOutputPath(cfg), "auto in current directory"), cfg.size, cfg.quality, cfg.format, cfg.background, cfg.fast, cfg.model, cfg.size, cfg.quality, cfg.format, cfg.background, cfg.fast, cfg.timeout)
+`, cfg.model, displayValue(effectiveOutputPath(cfg), "auto in current directory"), cfg.size, cfg.quality, cfg.format, cfg.background, cfg.action, cfg.imageDetail, cfg.fast, cfg.model, cfg.size, cfg.quality, cfg.format, cfg.background, cfg.action, cfg.imageDetail, cfg.fast, cfg.timeout)
 }

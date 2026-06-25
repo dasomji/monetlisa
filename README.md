@@ -30,11 +30,25 @@ It also falls back to an existing Codex CLI login at:
 monetlisa "A tiny oil painting of a corgi astronaut on the moon"
 monetlisa -o cover.webp "Editorial cover art: a calm robot gardener"
 monetlisa --size 1024x1536 --quality high --format webp "Tall art nouveau poster of a fox magician"
+monetlisa --image screenshot.png --action edit -o mockup.webp "Modernize this UI while preserving layout"
 cat prompt.txt | monetlisa --output images/generated.webp
 monetlisa status
 ```
 
 The command prints the saved image path. Relative output paths resolve from the directory where you call `monetlisa`, not from `~/.monetlisa`.
+
+## Image input and edits
+
+Pass one or more reference images with `--image` / `-i`. Local files are encoded as `input_image` data URLs; HTTP(S) image URLs and `data:image/...` URLs are passed through. Supported local file types are PNG, JPEG, WEBP, and GIF.
+
+```sh
+monetlisa --image screenshot.png --action edit -o mockup.webp \
+  "Modernize this dashboard while preserving the information architecture"
+monetlisa -i before.png,logo.png --image-detail high -o redesign.webp \
+  "Create a cleaner SaaS UI using these references"
+```
+
+Use `--action edit` to force image editing/reference behavior. The default `--action auto` lets the model decide whether to generate or edit based on the prompt and attached images.
 
 ## Output paths
 
@@ -59,6 +73,8 @@ Defaults:
 - quality: `auto`
 - format: `webp`
 - background: `auto`
+- image generation action: `auto`
+- input image detail: `high`
 - fast mode: enabled (`service_tier: priority`)
 - timeout: `10m`
 
@@ -92,6 +108,9 @@ In that sweep, `webp` produced substantially smaller files than `png` while reta
 -quality           auto, low, medium, high
 -format            webp, png, jpeg
 -background        auto, opaque
+-action            auto, generate, edit
+-image-detail      auto, low, high, original
+-i, -image         input image path, URL, or data URL (repeatable, comma-separated)
 -prompt            optional system prompt
 -skills-dir        directory of skill markdown prompts
 -fast              request Fast mode via service_tier=priority; default true

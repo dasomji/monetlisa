@@ -36,12 +36,39 @@ func TestCodexRequestBodyUsesMessageListInput(t *testing.T) {
 	if len(input) != 1 || input[0]["role"] != "user" {
 		t.Fatalf("input = %#v, want one user message", input)
 	}
-	content, ok := input[0]["content"].([]map[string]string)
+	content, ok := input[0]["content"].([]map[string]any)
 	if !ok {
-		t.Fatalf("content has type %T, want []map[string]string", input[0]["content"])
+		t.Fatalf("content has type %T, want []map[string]any", input[0]["content"])
 	}
 	if len(content) != 1 || content[0]["type"] != "input_text" || content[0]["text"] != "Tell me a joke" {
 		t.Fatalf("content = %#v, want input_text input", content)
+	}
+}
+
+func TestCodexRequestBodyIncludesInputImages(t *testing.T) {
+	body := codexRequestBody(config{
+		model:  "gpt-5.5",
+		prompt: "Improve it",
+		input:  "Make this dashboard cleaner",
+		action: "edit",
+		inputImages: []inputImage{{
+			ImageURL: "data:image/png;base64,Zm9v",
+			Detail:   "high",
+		}},
+	})
+
+	input := body["input"].([]map[string]any)
+	content := input[0]["content"].([]map[string]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %#v, want text and image", content)
+	}
+	image := content[1]
+	if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,Zm9v" || image["detail"] != "high" {
+		t.Fatalf("image content = %#v", image)
+	}
+	tools := body["tools"].([]map[string]any)
+	if tools[0]["action"] != "edit" {
+		t.Fatalf("tool action = %#v, want edit", tools[0]["action"])
 	}
 }
 
@@ -111,6 +138,37 @@ func TestConfigDefaultOutputPath(t *testing.T) {
 	}
 	if got := effectiveOutputPath(cfg); got != path {
 		t.Fatalf("default output path = %q", got)
+	}
+}
+
+func TestParseRunFlagsLoadsInputImage(t *testing.T) {
+	clearMonetlisaEnv(t)
+	imagePath := filepath.Join(t.TempDir(), "screenshot.png")
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if err := os.WriteFile(imagePath, png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := parseRunFlags([]string{"--monetlisa-home", t.TempDir(), "--image", imagePath, "--action", "edit", "Modernize this UI"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.inputImages) != 1 {
+		t.Fatalf("inputImages = %#v", cfg.inputImages)
+	}
+	if !strings.HasPrefix(cfg.inputImages[0].ImageURL, "data:image/png;base64,") {
+		t.Fatalf("image URL = %q", cfg.inputImages[0].ImageURL)
+	}
+	if cfg.inputImages[0].Detail != "high" {
+		t.Fatalf("detail = %q, want high", cfg.inputImages[0].Detail)
+	}
+}
+
+func TestParseRunFlagsRejectsEditWithoutImage(t *testing.T) {
+	clearMonetlisaEnv(t)
+	_, err := parseRunFlags([]string{"--monetlisa-home", t.TempDir(), "--action", "edit", "Modernize this UI"})
+	if err == nil || !strings.Contains(err.Error(), "edit requires") {
+		t.Fatalf("err = %v, want edit requires image", err)
 	}
 }
 
