@@ -138,8 +138,8 @@ CODEX_HOME
 ## Build
 
 ```sh
-mise x go@1.26.4 -- go test ./...
-mise x go@1.26.4 -- go build -o monetlisa ./cmd/monetlisa
+mise x go@1.26.10 -- go test ./...
+mise x go@1.26.10 -- go build -o monetlisa ./cmd/monetlisa
 ```
 
 If Go is installed normally:
